@@ -130,3 +130,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# added by me
+data
+saved_models
+gencode41_basic*
+hg38.fa*
+polyadb_human_v3.csv.gz
+saved_models/
+.virtual_documents/
+*.eps
+*.png
+
