@@ -1272,9 +1272,234 @@ def plot_coverage_track_pair_bins(
 
         plt.show()
 
+def plot_coverage_track_pair_bins_mod(
+    y_wt,
+    y_mut,
+    chrom,
+    start,
+    center_pos,
+    poses,
+    track_indices,
+    track_names,
+    track_scales,
+    track_transforms,
+    clip_softs,
+    plot_start,
+    plot_end,
+    log_scale=False,
+    sqrt_scale=False,
+    plot_mut=True,
+    #plot_window=4096,
+    normalize_window=4096,
+    bin_size=32,
+    pad=16,
+    rescale_tracks=True,
+    normalize_counts=False,
+    save_figs=False,
+    save_suffix="default",
+    gene_slice=None,
+    anno_df=None,
+):
 
+    #plot_start = center_pos - plot_window // 2
+    #plot_end = center_pos + plot_window // 2
+
+    plot_start_bin = (plot_start - start) // bin_size - pad
+    plot_end_bin = (plot_end - start) // bin_size - pad
+
+    normalize_start = center_pos - normalize_window // 2
+    normalize_end = center_pos + normalize_window // 2
+
+    normalize_start_bin = (normalize_start - start) // bin_size - pad
+    normalize_end_bin = (normalize_end - start) // bin_size - pad
+
+    center_bin = (center_pos - start) // bin_size - pad
+    mut_bin = (poses[0] - start) // bin_size - pad
+
+    # Get annotation positions
+    anno_poses = []
+    if anno_df is not None:
+        anno_poses = anno_df.query(
+            "chrom == '"
+            + chrom
+            + "' and position_hg38 >= "
+            + str(plot_start)
+            + " and position_hg38 < "
+            + str(plot_end)
+        )["position_hg38"].values.tolist()
+
+    # Plot each tracks
+    for track_name, track_index, track_scale, track_transform, clip_soft in zip(
+        track_names, track_indices, track_scales, track_transforms, clip_softs
+    ):
+
+        # Plot track densities (bins)
+        y_wt_curr = np.array(np.copy(y_wt), dtype=np.float32)
+        y_mut_curr = np.array(np.copy(y_mut), dtype=np.float32)
+
+        if rescale_tracks:
+            # undo scale
+            y_wt_curr /= track_scale
+            y_mut_curr /= track_scale
+
+            # undo soft_clip
+            if clip_soft is not None:
+                y_wt_curr_unclipped = (y_wt_curr - clip_soft) ** 2 + clip_soft
+                y_mut_curr_unclipped = (y_mut_curr - clip_soft) ** 2 + clip_soft
+
+                unclip_mask_wt = y_wt_curr > clip_soft
+                unclip_mask_mut = y_mut_curr > clip_soft
+
+                y_wt_curr[unclip_mask_wt] = y_wt_curr_unclipped[unclip_mask_wt]
+                y_mut_curr[unclip_mask_mut] = y_mut_curr_unclipped[unclip_mask_mut]
+
+            # undo sqrt
+            y_wt_curr = y_wt_curr ** (1.0 / track_transform)
+            y_mut_curr = y_mut_curr ** (1.0 / track_transform)
+
+        y_wt_curr = np.mean(y_wt_curr[..., track_index], axis=(0, 1, 3))
+        y_mut_curr = np.mean(y_mut_curr[..., track_index], axis=(0, 1, 3))
+
+        if normalize_counts:
+            wt_count = np.sum(y_wt_curr[normalize_start_bin:normalize_end_bin])
+            mut_count = np.sum(y_mut_curr[normalize_start_bin:normalize_end_bin])
+
+            # Normalize to densities
+            y_wt_curr /= wt_count
+            y_mut_curr /= mut_count
+
+            # Bring back to count space (wt reference)
+            y_wt_curr *= wt_count
+            y_mut_curr *= wt_count
+
+        if gene_slice is not None:
+            sum_wt = np.sum(y_wt_curr[gene_slice])
+            sum_mut = np.sum(y_mut_curr[gene_slice])
+
+            print(" - sum_wt = " + str(round(sum_wt, 4)))
+            print(" - sum_mut = " + str(round(sum_mut, 4)))
+
+        y_wt_curr = y_wt_curr[plot_start_bin:plot_end_bin]
+        y_mut_curr = y_mut_curr[plot_start_bin:plot_end_bin]
+
+        if log_scale:
+            y_wt_curr = np.log2(y_wt_curr + 1.0)
+            y_mut_curr = np.log2(y_mut_curr + 1.0)
+        elif sqrt_scale:
+            y_wt_curr = np.sqrt(y_wt_curr + 1.0)
+            y_mut_curr = np.sqrt(y_mut_curr + 1.0)
+
+        max_y_wt = np.max(y_wt_curr)
+        max_y_mut = np.max(y_mut_curr)
+
+        if plot_mut:
+            max_y = max(max_y_wt, max_y_mut)
+        else:
+            max_y = max_y_wt
+
+        print(" - max_y_wt = " + str(round(max_y_wt, 4)))
+        print(" - max_y_mut = " + str(round(max_y_mut, 4)))
+        print(" -- (max_y = " + str(round(max_y, 4)) + ")")
+
+        f = plt.figure(figsize=(12, 2))
+
+        plt.bar(
+            np.arange(plot_end_bin - plot_start_bin) + plot_start_bin,
+            y_wt_curr,
+            width=1.0,
+            color="green",
+            alpha=0.5,
+            label="Ref",
+        )
+
+        if plot_mut:
+            plt.bar(
+                np.arange(plot_end_bin - plot_start_bin) + plot_start_bin,
+                y_mut_curr,
+                width=1.0,
+                color="red",
+                alpha=0.5,
+                label="Alt",
+            )
+
+        xtick_vals = []
+
+        for pas_ix, anno_pos in enumerate(anno_poses):
+
+            pas_bin = int((anno_pos - start) // 32) - 16
+
+            xtick_vals.append(pas_bin)
+
+            bin_end = pas_bin + 3 - 0.5
+            bin_start = bin_end - 5
+
+            plt.axvline(
+                x=pas_bin,
+                color="cyan",
+                linewidth=2,
+                alpha=0.5,
+                linestyle="-",
+                zorder=-1,
+            )
+
+        plt.scatter(
+            [mut_bin],
+            [0.075 * max_y],
+            color="black",
+            s=125,
+            marker="*",
+            zorder=100,
+            label="SNP",
+        )
+
+        plt.xlim(plot_start_bin, plot_end_bin - 1)
+
+        plt.xticks([], [])
+        plt.yticks([], [])
+
+        plt.xlabel(
+            chrom
+            + ":"
+            + str(plot_start)
+            + "-"
+            + str(plot_end)
+            + " ("
+            + str(plot_end-plot_start)
+            + "bp window)",
+            fontsize=8,
+        )
+        plt.ylabel("Signal (log)" if not rescale_tracks else "Signal", fontsize=8)
+
+        plt.title("Track(s): " + str(track_name), fontsize=8)
+
+        plt.legend(fontsize=8)
+
+        plt.tight_layout()
+
+        if save_figs:
+            plt.savefig(
+                "borzoi_"
+                + save_suffix
+                + "_track_"
+                + str(track_index[0])
+                + "_to_"
+                + str(track_index[-1])
+                + ".png",
+                dpi=300,
+                transparent=False,
+            )
+            plt.savefig(
+                "borzoi_"
+                + save_suffix
+                + "_track_"
+                + str(track_index[0])
+                + "_to_"
+                + str(track_index[-1])
+                + ".eps"
+            )
+
+        plt.show()
 # Helper functions (measured RNA-seq coverage loader)
-
 
 def get_coverage_reader(
     cov_files, target_length, crop_length, blacklist_bed, blacklist_pct=0.5
